@@ -1,0 +1,13 @@
+node_modules/
+dist/
+.DS_Store
+*.local
+.env
+
+# Data: DICOM files are large — exclude from git, serve locally only
+data/LIDC-IDRI-*/
+data/sample_dicom/
+data/sample_annotations/
+
+# Keep the data README and manifest skeleton
+!data/README.md
