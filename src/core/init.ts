@@ -58,6 +58,16 @@ export function initViewport(element: HTMLDivElement) {
   })
 }
 
+// ─── Resize observer: keep viewport canvas in sync with its container ─────────
+// Returns a cleanup function — call it from useEffect's return.
+export function setupResizeObserver(element: HTMLDivElement): () => void {
+  const observer = new ResizeObserver(() => {
+    try { renderingEngine?.resize(true, false) } catch { /* ok */ }
+  })
+  observer.observe(element)
+  return () => observer.disconnect()
+}
+
 // ─── Register tools and configure defaults ───────────────────────────────────
 export function initTools() {
   // addTool is idempotent — wrap in try/catch for safety

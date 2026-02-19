@@ -24,6 +24,7 @@ import {
   initTools,
   setActiveTool,
   getRenderingEngine,
+  setupResizeObserver,
   VIEWPORT_ID,
 } from './core/init'
 import { loadDicomFiles, loadSampleData, getImageIds } from './core/loader'
@@ -65,12 +66,15 @@ export default function App() {
     if (!viewportRef.current) return
     const el = viewportRef.current
 
+    let cleanupResize: (() => void) | undefined
+
     ;(async () => {
       try {
         setStatus('Initialising Cornerstone3D…')
         await initCornerstone()
         initViewport(el)
         initTools()
+        cleanupResize = setupResizeObserver(el)
 
         // Try to auto-load sample data from public/data/
         setStatus('Looking for sample data…')
@@ -89,6 +93,8 @@ export default function App() {
         setStatus(`Error: ${err instanceof Error ? err.message : String(err)}`)
       }
     })()
+
+    return () => { cleanupResize?.() }
   }, [])
 
   // ── Slice change listener ──────────────────────────────────────────────────
@@ -261,16 +267,18 @@ export default function App() {
   // ---------------------------------------------------------------------------
   // TASK 3 — Load AI Segmentation Overlay (40 points)
   // ---------------------------------------------------------------------------
-  // Load the TotalSegmentator NIfTI result from
-  // /data/sample_annotations/segmentation.nii.gz and display it as a
+  // Load the TotalSegmentator DICOM SEG result from
+  // /data/LIDC-IDRI-0001/annotations/ and display it as a
   // Cornerstone3D labelmap segmentation overlay.
   //
   // Steps (see HACKATHON_TASKS.md § Task 3):
-  //   1. Fetch and decode the NIfTI file (consider: nifti-reader-js)
-  //        npm install nifti-reader-js
-  //   2. Create a segmentation representation:
+  //   1. Fetch the DICOM SEG file (LIDC-IDRI-0001_lung_nodules_seg.dcm)
+  //        const res = await fetch('/data/LIDC-IDRI-0001/annotations/...dcm')
+  //        const buf = await res.arrayBuffer()
+  //   2. Add to wadouri fileManager and load as image:
+  //        const segImageId = wadouri.fileManager.add(new File([buf], 'seg.dcm'))
+  //   3. Create a segmentation representation and add to tool group:
   //        segmentation.addSegmentations([{ segmentationId, representation }])
-  //   3. Add the labelmap to the tool group
   //   4. Call setSegments() to populate the Segments panel (bottom-right)
   //
   const handleLoadAI = useCallback(async () => {
@@ -280,8 +288,8 @@ export default function App() {
       'TASK 3 — Load AI Segmentation (40 pts)\n\n' +
       'Implement handleLoadAI() in src/App.tsx.\n\n' +
       'Steps:\n' +
-      '1. Fetch NIfTI: /data/sample_annotations/segmentation.nii.gz\n' +
-      '2. Decode with nifti-reader-js\n' +
+      '1. Fetch DICOM SEG: /data/LIDC-IDRI-0001/annotations/LIDC-IDRI-0001_lung_nodules_seg.dcm\n' +
+      '2. Add via wadouri.fileManager and loadAndCacheImage\n' +
       '3. Create Cornerstone3D labelmap segmentation\n' +
       '4. Display overlay with per-segment colours\n\n' +
       'See HACKATHON_TASKS.md for API examples!'
