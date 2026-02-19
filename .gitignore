@@ -4,10 +4,11 @@ dist/
 *.local
 .env
 
-# Data: DICOM files are large — exclude from git, serve locally only
+# Data: DICOM files are large — exclude from git, download separately
 data/LIDC-IDRI-*/
 data/sample_dicom/
 data/sample_annotations/
 
-# Keep the data README and manifest skeleton
+# Keep data docs
 !data/README.md
+!data/DOWNLOAD.md
