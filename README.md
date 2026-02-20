@@ -5,6 +5,10 @@ Welcome to the Atomorphic Mini Hackathon! This workspace contains a working DICO
 ## Quick Start
 
 ```bash
+# Clone the workspace
+git clone https://github.com/atomorphic/hackathon-workspace.git
+cd hackathon-workspace
+
 # Install dependencies
 npm install
 

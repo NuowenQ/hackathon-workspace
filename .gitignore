@@ -12,3 +12,6 @@ data/sample_annotations/
 # Keep data docs
 !data/README.md
 !data/DOWNLOAD.md
+!data/LIDC-IDRI-0001
+!data/LIDC-IDRI-0002
+!data/LIDC-IDRI-0003
