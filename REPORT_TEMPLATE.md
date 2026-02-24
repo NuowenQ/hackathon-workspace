@@ -1,98 +1,44 @@
 # Hackathon Report — [Your Name]
 
 **Date:** 24 February 2026  
-**Time to complete:** 18:00–18:30
+**Coding:** 16:00–18:00  
+**Report writing:** 18:00–18:30  
+**Tasks completed:** *(e.g. Task 1, Task 2, partial Task 3)*
 
 ---
 
-## Approach Summary
+## Overview
 
-*Brief overview of what you implemented and your overall strategy (3–5 sentences).*
-
----
-
-## Task 1: Study Selector Panel
-
-### What I implemented
-*Describe your implementation.*
-
-### What I found confusing or unexpected
-*Describe any surprises or difficulties.*
-
-### If you used AI: what did you have to fix or verify?
-*Describe one concrete example where AI output was wrong or needed correction.*
+*What did you build? What was your overall strategy? (3–5 sentences)*
 
 ---
 
-## Task 2: Load Ground Truth Annotations
+## Tasks
 
-### What I implemented
-*Describe your implementation.*
+For each task you attempted, briefly describe what you did, what surprised you, and any tradeoffs you made. Skip tasks you did not attempt — or leave a one-line note on why.
 
-### What I found confusing or unexpected
-*Describe any surprises or difficulties.*
+### Task 1 — Study Selector
 
-### If you used AI: what did you have to fix or verify?
-*Describe one concrete example where AI output was wrong or needed correction.*
+### Task 2 — Load Ground Truth
 
----
+### Task 3 — Run AI Segmentation
 
-## Task 3: Run AI Segmentation Model
+### Task 4 — Display AI Segmentation
 
-### What I implemented
-*Describe your integration approach and why you chose it.*
-
-### What I found confusing or unexpected
-*Describe any surprises or difficulties.*
-
-### If you used AI: what did you have to fix or verify?
-*Describe one concrete example where AI output was wrong or needed correction.*
-
----
-
-## Task 4: Display AI Segmentation
-
-### What I implemented
-*Describe your implementation.*
-
-### What I found confusing or unexpected
-*Describe any surprises or difficulties.*
-
-### If you used AI: what did you have to fix or verify?
-*Describe one concrete example where AI output was wrong or needed correction.*
-
----
-
-## Bonus
-
-### What I implemented
-*Describe any bonus features you completed (Bonus A: AI Assist, Bonus B: UI Polish).*
+### Bonus
 
 ---
 
 ## Reflection
 
-### What is the difference between canvas coordinates, image pixel coordinates, and world coordinates in Cornerstone3D? Where in your code did each appear?
+*Answer any or all of the questions below — or raise your own.*
 
-*Your answer.*
-
-### What was the hardest bug you encountered? How did you diagnose it?
-
-*Your answer.*
-
-### If you had 4 more hours, what would you add or change?
-
-*Your answer.*
+- What was the hardest part of the challenge?
+- What would you do differently if you had more time?
+- Was there anything about the codebase or tooling that surprised you?
 
 ---
 
-## AI Usage Log
+## AI Usage
 
-### Which AI tools did you use?
-*List tools: Claude, Copilot, ChatGPT, OpenCode, Codex, etc.*
-
-### Give one example of a prompt you used
-*Paste or describe the prompt.*
-
-### Give one example of something the AI generated that you had to fix or verify
-*Describe what was wrong and how you fixed it.*
+*Which tools did you use, and how did you use them? What did you have to verify or correct?*
