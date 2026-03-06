@@ -18,6 +18,7 @@ I implemented all four core tasks and both bonuses for the DICOM Annotation View
 ### Task 1 — Study Selector
 
 Built a clickable list of LIDC studies in the left sidebar panel. Each item shows the study ID and slice count. Clicking a study calls `loadStudy(caseId)` to fetch CT slices into the viewport, with a progress callback updating the status bar (e.g. "Loading LIDC-IDRI-0001... 45/133"). The `activeStudy` state tracks the selection and applies visual highlighting (accent background, white text). After loading, the viewport jumps to the middle slice.
+
 <img width="323" height="242" alt="image" src="https://github.com/user-attachments/assets/ed118a51-1f40-4f88-a72c-fde0c60c1eb0" />
 
 **Tradeoff:** I set `activeStudy` before loading completes so that Tasks 2-4 can reference it immediately. This means a user could theoretically click "Load GT" while slices are still loading, but the guard checks in those handlers prevent issues.
