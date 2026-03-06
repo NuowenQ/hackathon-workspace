@@ -623,10 +623,133 @@ export default function App() {
   // See HACKATHON_TASKS.md § Bonus A for hints.
   //
   const handleAIAssist = useCallback(async () => {
-    // TODO Bonus A — implement handleAIAssist()
-    console.warn('Bonus A not yet implemented')
-    setStatus('Bonus A: AI-Assisted Segmentation — not yet implemented')
-  }, [activeStudy])
+    if (!activeStudy) { setStatus('Select a study first'); return }
+    if (aiRunning) { setStatus('AI segmentation already running…'); return }
+
+    try {
+      // Step 1: POST to segment server
+      setAiRunning(true)
+      setStatus(`AI Assist: running segmentation on ${activeStudy}…`)
+
+      const resp = await fetch('http://localhost:8000/segment', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ case_id: activeStudy }),
+      })
+      if (!resp.ok) throw new Error(`Server error ${resp.status}: ${await resp.text()}`)
+
+      const data = await resp.json()
+      const segUrl = '/' + data.seg_path
+      setSegPath(segUrl)
+
+      // Step 2: Load and display the SEG overlay (reuses Task 4 logic inline)
+      setStatus('AI Assist: loading segmentation overlay…')
+
+      const arrayBuffer = await fetch(segUrl).then(r => {
+        if (!r.ok) throw new Error(`Failed to fetch SEG: ${r.status}`)
+        return r.arrayBuffer()
+      })
+
+      const dicomData = dcmjs.data.DicomMessage.readFile(arrayBuffer)
+      const dataset = dcmjs.data.DicomMetaDictionary.naturalizeDataset(dicomData.dict)
+      const numFrames = Number(dataset.NumberOfFrames) || 0
+      const rows = Number(dataset.Rows) || 0
+      const cols = Number(dataset.Columns) || 0
+      const pixelsPerFrame = rows * cols
+      if (numFrames === 0 || pixelsPerFrame === 0) throw new Error('Invalid SEG')
+
+      const segSequence: any[] = Array.isArray(dataset.SegmentSequence)
+        ? dataset.SegmentSequence : dataset.SegmentSequence ? [dataset.SegmentSequence] : []
+      const segmentMeta: { index: number; label: string; color: number[] }[] = []
+      const skipSegNums = new Set<number>()
+      for (let i = 0; i < segSequence.length; i++) {
+        const seg = segSequence[i]
+        const segNum = Number(seg.SegmentNumber) || (i + 1)
+        const label = seg.SegmentLabel || seg.SegmentDescription || `Segment ${i + 1}`
+        if (/background/i.test(label)) { skipSegNums.add(segNum); continue }
+        segmentMeta.push({ index: segNum, label, color: [255, 0, 0] })
+      }
+
+      let pixelDataBuffer: ArrayBuffer
+      const rawPD = (dicomData.dict as any)['7FE00010']
+      if (rawPD?.Value?.[0] instanceof ArrayBuffer) pixelDataBuffer = rawPD.Value[0]
+      else if (dataset.PixelData instanceof ArrayBuffer) pixelDataBuffer = dataset.PixelData
+      else if (dataset.PixelData?.byteLength) pixelDataBuffer = dataset.PixelData.buffer ?? dataset.PixelData
+      else throw new Error('Could not extract PixelData')
+
+      const expectedBits = Math.ceil(numFrames * pixelsPerFrame / 8)
+      const isBitpacked = pixelDataBuffer.byteLength <= expectedBits * 1.1
+      const pixelValues = isBitpacked
+        ? dcmjs.data.BitArray.unpack(pixelDataBuffer) : new Uint8Array(pixelDataBuffer)
+
+      const perFrame: any[] = dataset.PerFrameFunctionalGroupsSequence || []
+      const imageIds = getImageIds()
+      await Promise.all(imageIds.map(id => imageLoader.loadAndCacheImage(id)))
+
+      const zToImageId = new Map<string, string>()
+      for (const imgId of imageIds) {
+        const ipp = metaData.get('imagePlaneModule', imgId)?.imagePositionPatient
+        if (ipp) zToImageId.set(parseFloat(ipp[2]).toFixed(1), imgId)
+      }
+
+      const derivedImages = imageLoader.createAndCacheDerivedLabelmapImages(imageIds)
+      const derivedImageIds = derivedImages.map((img: any) => img.imageId)
+      const imageIdToIdx = new Map<string, number>()
+      imageIds.forEach((id, idx) => imageIdToIdx.set(id, idx))
+
+      for (let f = 0; f < numFrames; f++) {
+        const fg = perFrame[f]; if (!fg) continue
+        let segNum = 0
+        const segId = fg.SegmentIdentificationSequence
+        if (segId) segNum = Number(Array.isArray(segId) ? segId[0]?.ReferencedSegmentNumber : segId?.ReferencedSegmentNumber) || 0
+        if (!segNum) {
+          const fc = Array.isArray(fg.FrameContentSequence) ? fg.FrameContentSequence[0] : fg.FrameContentSequence
+          const div = fc?.DimensionIndexValues
+          if (div != null) segNum = Number(Array.isArray(div) ? div[0] : div) || 0
+        }
+        if (!segNum) segNum = 1
+        if (skipSegNums.has(segNum)) continue
+        const pp = fg.PlanePositionSequence
+        const ipp = Array.isArray(pp) ? pp[0]?.ImagePositionPatient : pp?.ImagePositionPatient
+        if (!ipp) continue
+        const ippArr = Array.isArray(ipp) ? ipp : [ipp]
+        const zKey = parseFloat(ippArr.length >= 3 ? ippArr[2] : ippArr[0]).toFixed(1)
+        const ctId = zToImageId.get(zKey); if (!ctId) continue
+        const idx = imageIdToIdx.get(ctId); if (idx === undefined) continue
+        const sd = (derivedImages[idx] as any).voxelManager?.getScalarData?.() ?? (derivedImages[idx] as any).getPixelData?.()
+        if (!sd) continue
+        const off = f * pixelsPerFrame
+        for (let p = 0; p < pixelsPerFrame; p++) { if (pixelValues[off + p] !== 0) sd[p] = segNum }
+      }
+
+      const segmentationId = `seg-${activeStudy}-${Date.now()}`
+      segmentationModule.addSegmentations([{
+        segmentationId,
+        representation: { type: ToolEnums.SegmentationRepresentations.Labelmap, data: { imageIds: derivedImageIds } as any },
+        config: { segments: Object.fromEntries(segmentMeta.map(s => [s.index, { label: s.label, active: false }])) },
+      }])
+      segmentationModule.addLabelmapRepresentationToViewport(VIEWPORT_ID, [{
+        segmentationId, type: ToolEnums.SegmentationRepresentations.Labelmap,
+      }])
+
+      const colorLUT = segmentationModule.state.getColorLUT(0)
+      setSegments(segmentMeta.map(s => ({
+        ...s,
+        color: colorLUT?.[s.index] ? [colorLUT[s.index][0], colorLUT[s.index][1], colorLUT[s.index][2]] : s.color,
+      })))
+      getRenderingEngine()?.getViewport(VIEWPORT_ID)?.render()
+      setStatus(`AI Assist complete — ${segmentMeta.length} segment(s) displayed`)
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err)
+      if (msg.includes('Failed to fetch') || msg.includes('NetworkError')) {
+        setStatus('Error: Cannot reach segmentation server. Is it running on localhost:8000?')
+      } else {
+        setStatus(`AI Assist error: ${msg}`)
+      }
+    } finally {
+      setAiRunning(false)
+    }
+  }, [activeStudy, aiRunning])
 
   // ==========================================================================
   return (
@@ -713,8 +836,8 @@ export default function App() {
           <button disabled={!ready} onClick={handleShowAISeg}>
             Show AI Seg
           </button>
-          <button disabled={!ready} onClick={handleAIAssist}>
-            AI Assist
+          <button disabled={!ready || aiRunning} onClick={handleAIAssist}>
+            {aiRunning ? 'Running…' : 'AI Assist'}
           </button>
         </div>
 
