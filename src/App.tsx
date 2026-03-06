@@ -27,6 +27,7 @@ import {
   getRenderingEngine,
   setupResizeObserver,
   VIEWPORT_ID,
+  getToolGroup,
 } from './core/init'
 import { loadDicomFiles, loadStudy, getImageIds, LIDC_STUDIES } from './core/loader'
 import {
@@ -38,7 +39,7 @@ import {
   PlanarFreehandROITool,
   annotation,
 } from '@cornerstonejs/tools'
-import { Enums as CoreEnums } from '@cornerstonejs/core'
+import { Enums as CoreEnums, utilities as csUtils, metaData, imageLoader } from '@cornerstonejs/core'
 import { Enums as ToolEnums } from '@cornerstonejs/tools'
 
 // ─── Types ────────────────────────────────────────────────────────────────────
@@ -205,9 +206,17 @@ export default function App() {
   // See HACKATHON_TASKS.md § Task 1 for hints.
   //
   const handleSelectStudy = useCallback(async (caseId: string) => {
-    // TODO Task 1 — implement handleSelectStudy()
-    console.warn('Task 1 not yet implemented')
-    setStatus('Task 1: Study Selector — not yet implemented')
+    try {
+      setStatus(`Loading ${caseId}…`)
+      setActiveStudy(caseId)
+      const n = await loadStudy(caseId, (loaded, total) =>
+        setStatus(`Loading ${caseId}… ${loaded}/${total}`)
+      )
+      setInfo(prev => ({ ...prev, slice: String(Math.floor(n / 2) + 1), total: String(n) }))
+      setStatus(`${caseId} — ${n} slices loaded`)
+    } catch (err) {
+      setStatus(`Error loading ${caseId}: ${err instanceof Error ? err.message : String(err)}`)
+    }
   }, [])
 
   // ---------------------------------------------------------------------------
@@ -220,9 +229,125 @@ export default function App() {
   // See HACKATHON_TASKS.md § Task 2 for hints.
   //
   const handleLoadGT = useCallback(async () => {
-    // TODO Task 2 — implement handleLoadGT()
-    console.warn('Task 2 not yet implemented')
-    setStatus('Task 2: Load Ground Truth — not yet implemented')
+    if (!activeStudy) { setStatus('Select a study first'); return }
+
+    const study = LIDC_STUDIES.find(s => s.id === activeStudy)
+    if (!study) return
+
+    try {
+      setStatus('Loading ground truth annotations…')
+
+      // 1. Fetch the LIDC XML
+      const xmlUrl = `/data/${activeStudy}/annotations/${study.xml}`
+      const resp = await fetch(xmlUrl)
+      if (!resp.ok) throw new Error(`Failed to fetch ${xmlUrl}: ${resp.status}`)
+      const xmlText = await resp.text()
+
+      // 2. Parse XML (namespace-aware: xmlns="http://www.nih.gov")
+      const parser = new DOMParser()
+      const doc = parser.parseFromString(xmlText, 'text/xml')
+      const NS = 'http://www.nih.gov'
+
+      // 3. Pre-load all images so their metadata (ImagePositionPatient) is available.
+      //    With wadouri:, metadata is only populated after the DICOM file is fetched.
+      const imageIds = getImageIds()
+      setStatus(`Loading metadata for ${imageIds.length} slices…`)
+      await Promise.all(imageIds.map(id => imageLoader.loadAndCacheImage(id)))
+
+      // 4. Build a Z-position → imageId lookup from the loaded stack
+      const zToImageId = new Map<string, string>()
+      for (const imgId of imageIds) {
+        const ipp = metaData.get('imagePlaneModule', imgId)?.imagePositionPatient
+        if (ipp) {
+          const zKey = parseFloat(ipp[2]).toFixed(1)
+          zToImageId.set(zKey, imgId)
+        }
+      }
+      console.log(`Z→imageId map: ${zToImageId.size} entries from ${imageIds.length} images`)
+
+      // 4. Extract ROIs and create annotations
+      const rois = doc.getElementsByTagNameNS(NS, 'roi')
+      let addedCount = 0
+
+      for (let i = 0; i < rois.length; i++) {
+        const roi = rois[i]
+
+        // Get Z position
+        const zElem = roi.getElementsByTagNameNS(NS, 'imageZposition')[0]
+        if (!zElem?.textContent) continue
+        const zVal = parseFloat(zElem.textContent.trim())
+        const zKey = zVal.toFixed(1)
+
+        // Find matching imageId
+        const imageId = zToImageId.get(zKey)
+        if (!imageId) continue
+
+        // Get edge points
+        const edgeMaps = roi.getElementsByTagNameNS(NS, 'edgeMap')
+        if (edgeMaps.length < 3) continue // skip single-point markers
+
+        // Convert pixel coords to world coords
+        const polyline: [number, number, number][] = []
+        for (let j = 0; j < edgeMaps.length; j++) {
+          const xElem = edgeMaps[j].getElementsByTagNameNS(NS, 'xCoord')[0]
+          const yElem = edgeMaps[j].getElementsByTagNameNS(NS, 'yCoord')[0]
+          if (!xElem?.textContent || !yElem?.textContent) continue
+
+          const xCoord = parseFloat(xElem.textContent)
+          const yCoord = parseFloat(yElem.textContent)
+
+          // imageToWorldCoords: [0] along rowCosines (horiz=col), [1] along columnCosines (vert=row)
+          const worldPt = csUtils.imageToWorldCoords(imageId, [xCoord, yCoord])
+          if (worldPt) {
+            polyline.push(worldPt as [number, number, number])
+          }
+        }
+
+        if (polyline.length < 3) continue
+
+        // 5. Build PlanarFreehandROI annotation object
+        const ann = {
+          annotationUID: crypto.randomUUID(),
+          metadata: {
+            toolName: PlanarFreehandROITool.toolName,
+            referencedImageId: imageId,
+            FrameOfReferenceUID: metaData.get('imagePlaneModule', imageId)?.frameOfReferenceUID ?? '',
+          },
+          data: {
+            handles: { points: [] as [number, number, number][], activeHandleIndex: null },
+            contour: {
+              polyline,
+              closed: true,
+            },
+            label: '',
+          },
+          highlighted: false,
+          isLocked: true,
+          isVisible: true,
+          invalidated: true,
+          autoGenerated: true,
+        }
+
+        annotation.state.addAnnotation(ann as any, viewportRef.current!)
+        addedCount++
+      }
+
+      // 6. Ensure PlanarFreehandROI tool is at least Enabled so annotations render
+      const tg = getToolGroup()
+      try { tg.setToolEnabled(PlanarFreehandROITool.toolName) } catch { /* ok */ }
+
+      // 7. Refresh the viewport to render annotations
+      const re = getRenderingEngine()
+      re?.getViewport(VIEWPORT_ID)?.render()
+
+      // Update annotations list in sidebar
+      const all = annotation.state.getAllAnnotations()
+      setAnnotations(all.map(a => ({ uid: a.annotationUID ?? '', type: a.metadata?.toolName ?? '' })))
+
+      setStatus(`Loaded ${addedCount} ground truth contours from ${study.xml}`)
+    } catch (err) {
+      setStatus(`Error loading GT: ${err instanceof Error ? err.message : String(err)}`)
+    }
   }, [activeStudy])
 
   // ---------------------------------------------------------------------------
@@ -389,7 +514,25 @@ export default function App() {
           {/* ── TASK 1: Study Selector — implement handleSelectStudy() ── */}
           <h3 style={{ borderTop: '1px solid var(--border)' }}>Studies</h3>
           <div className="list-content">
-            <p className="empty">Task 1: implement study selector</p>
+            {LIDC_STUDIES.map(s => (
+              <div
+                key={s.id}
+                className={`annotation-item${activeStudy === s.id ? ' active' : ''}`}
+                style={{
+                  cursor: 'pointer',
+                  padding: '6px 8px',
+                  background: activeStudy === s.id ? 'var(--accent)' : 'transparent',
+                  color: activeStudy === s.id ? '#fff' : 'inherit',
+                  borderRadius: 4,
+                  marginBottom: 2,
+                }}
+                onClick={() => handleSelectStudy(s.id)}
+              >
+                <strong>{s.id}</strong>
+                <br />
+                <span style={{ fontSize: 11, opacity: 0.8 }}>{s.slices} slices</span>
+              </div>
+            ))}
           </div>
         </div>
 
