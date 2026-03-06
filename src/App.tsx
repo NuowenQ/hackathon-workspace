@@ -63,6 +63,8 @@ export default function App() {
   const [info,        setInfo]        = useState<Info>({ slice: '--', total: '--', wl: '--' })
   const [segments,    setSegments]    = useState<SegmentEntry[]>([])
   const [annotations, setAnnotations] = useState<AnnotationEntry[]>([])
+  const [segPath,     setSegPath]     = useState<string | null>(null)
+  const [aiRunning,   setAiRunning]   = useState(false)
 
   // ── Initialise Cornerstone once the viewport div is mounted ────────────────
   useEffect(() => {
@@ -359,10 +361,39 @@ export default function App() {
   // See HACKATHON_TASKS.md § Task 3 for hints and available scripts.
   //
   const handleRunAI = useCallback(async () => {
-    // TODO Task 3 — implement handleRunAI()
-    console.warn('Task 3 not yet implemented')
-    setStatus('Task 3: Run AI Segmentation — not yet implemented')
-  }, [activeStudy])
+    if (!activeStudy) { setStatus('Select a study first'); return }
+    if (aiRunning) { setStatus('AI segmentation already running…'); return }
+
+    try {
+      setAiRunning(true)
+      setStatus(`Running AI segmentation on ${activeStudy}… (this may take a while)`)
+
+      const resp = await fetch('http://localhost:8000/segment', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ case_id: activeStudy }),
+      })
+
+      if (!resp.ok) {
+        const detail = await resp.text()
+        throw new Error(`Server error ${resp.status}: ${detail}`)
+      }
+
+      const data = await resp.json()
+      const path = '/' + data.seg_path   // make it a browser-fetchable URL
+      setSegPath(path)
+      setStatus(`AI segmentation complete → ${data.seg_path}`)
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err)
+      if (msg.includes('Failed to fetch') || msg.includes('NetworkError')) {
+        setStatus('Error: Cannot reach segmentation server. Is it running on localhost:8000?')
+      } else {
+        setStatus(`Error running AI: ${msg}`)
+      }
+    } finally {
+      setAiRunning(false)
+    }
+  }, [activeStudy, aiRunning])
 
   // ---------------------------------------------------------------------------
   // TASK 4 — Display AI Segmentation Overlay
@@ -476,8 +507,8 @@ export default function App() {
           <button disabled={!ready} onClick={handleLoadGT}>
             Load GT
           </button>
-          <button disabled={!ready} onClick={handleRunAI}>
-            Run AI
+          <button disabled={!ready || aiRunning} onClick={handleRunAI}>
+            {aiRunning ? 'Running…' : 'Run AI'}
           </button>
           <button disabled={!ready} onClick={handleShowAISeg}>
             Show AI Seg
