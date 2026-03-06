@@ -38,9 +38,11 @@ import {
   RectangleROITool,
   PlanarFreehandROITool,
   annotation,
+  segmentation as segmentationModule,
 } from '@cornerstonejs/tools'
 import { Enums as CoreEnums, utilities as csUtils, metaData, imageLoader } from '@cornerstonejs/core'
 import { Enums as ToolEnums } from '@cornerstonejs/tools'
+import dcmjs from 'dcmjs'
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 type NavTool  = 'WindowLevel' | 'Pan' | 'Zoom'
@@ -405,10 +407,208 @@ export default function App() {
   // See HACKATHON_TASKS.md § Task 4 for hints.
   //
   const handleShowAISeg = useCallback(async () => {
-    // TODO Task 4 — implement handleShowAISeg()
-    console.warn('Task 4 not yet implemented')
-    setStatus('Task 4: Show AI Segmentation — not yet implemented')
-  }, [activeStudy])
+    if (!activeStudy) { setStatus('Select a study first'); return }
+
+    // Use segPath from Task 3 if available, otherwise fall back to pre-computed file
+    const study = LIDC_STUDIES.find(s => s.id === activeStudy)
+    if (!study) return
+    const url = segPath ?? `/data/${activeStudy}/annotations/${activeStudy}_lung_nodules_seg.dcm`
+
+    try {
+      setStatus('Loading DICOM SEG file…')
+
+      // 1. Fetch and parse the DICOM SEG
+      const arrayBuffer = await fetch(url).then(r => {
+        if (!r.ok) throw new Error(`Failed to fetch SEG: ${r.status}`)
+        return r.arrayBuffer()
+      })
+
+      const dicomData = dcmjs.data.DicomMessage.readFile(arrayBuffer)
+      const dataset = dcmjs.data.DicomMetaDictionary.naturalizeDataset(dicomData.dict)
+
+      const numFrames = Number(dataset.NumberOfFrames) || 0
+      const rows = Number(dataset.Rows) || 0
+      const cols = Number(dataset.Columns) || 0
+      const pixelsPerFrame = rows * cols
+
+      if (numFrames === 0 || pixelsPerFrame === 0) throw new Error('Invalid SEG: no frames or dimensions')
+
+      // 2. Extract segment metadata
+      const segSequence: any[] = Array.isArray(dataset.SegmentSequence)
+        ? dataset.SegmentSequence
+        : dataset.SegmentSequence ? [dataset.SegmentSequence] : []
+
+      const segmentMeta: { index: number; label: string; color: number[] }[] = []
+      const skipSegNums = new Set<number>()
+      for (let i = 0; i < segSequence.length; i++) {
+        const seg = segSequence[i]
+        const segNum = Number(seg.SegmentNumber) || (i + 1)
+        const label = seg.SegmentLabel || seg.SegmentDescription || `Segment ${i + 1}`
+        // Skip "Background" segment — it covers the whole image and obscures the CT
+        if (/background/i.test(label)) {
+          skipSegNums.add(segNum)
+          continue
+        }
+        segmentMeta.push({ index: segNum, label, color: [255, 0, 0] })
+      }
+
+      // 3. Unpack bitpacked pixel data — get raw ArrayBuffer from dict (naturalizeDataset mangles binary)
+      let pixelDataBuffer: ArrayBuffer
+      const rawPD = (dicomData.dict as any)['7FE00010']
+      if (rawPD?.Value?.[0] instanceof ArrayBuffer) {
+        pixelDataBuffer = rawPD.Value[0]
+      } else if (dataset.PixelData instanceof ArrayBuffer) {
+        pixelDataBuffer = dataset.PixelData
+      } else if (dataset.PixelData?.byteLength) {
+        pixelDataBuffer = dataset.PixelData.buffer ?? dataset.PixelData
+      } else {
+        throw new Error('Could not extract PixelData from DICOM SEG')
+      }
+      // Check if data is bitpacked (1 bit/pixel) or byte-per-pixel
+      const expectedBytesIfBitpacked = Math.ceil(numFrames * pixelsPerFrame / 8)
+      const isBitpacked = pixelDataBuffer.byteLength <= expectedBytesIfBitpacked * 1.1
+      const pixelValues = isBitpacked
+        ? dcmjs.data.BitArray.unpack(pixelDataBuffer)
+        : new Uint8Array(pixelDataBuffer)
+      console.log('SEG PixelData:', pixelDataBuffer.byteLength, 'bytes,',
+        isBitpacked ? 'bitpacked' : 'byte-per-pixel',
+        'pixels:', pixelValues.length, 'expected:', numFrames * pixelsPerFrame)
+
+      // 4. Get per-frame functional groups to map each frame → Z position + segment number
+      const perFrame: any[] = dataset.PerFrameFunctionalGroupsSequence || []
+      // Log full keys of first frame to find SegmentIdentificationSequence location
+      console.log('PerFrame[0] keys:', perFrame[0] ? Object.keys(perFrame[0]) : 'none')
+      console.log('PerFrame[0] full:', JSON.stringify(perFrame[0], null, 2).slice(0, 1500))
+
+      // 5. Build Z → imageId map from CT stack (use .toFixed(1) for robust matching)
+      const imageIds = getImageIds()
+      await Promise.all(imageIds.map(id => imageLoader.loadAndCacheImage(id)))
+
+      const zToImageId = new Map<string, string>()
+      for (const imgId of imageIds) {
+        const ipp = metaData.get('imagePlaneModule', imgId)?.imagePositionPatient
+        if (ipp) {
+          const zKey = parseFloat(ipp[2]).toFixed(1)
+          zToImageId.set(zKey, imgId)
+        }
+      }
+      console.log('CT Z→imageId map:', zToImageId.size, 'entries. Sample keys:', [...zToImageId.keys()].slice(0, 5))
+
+      // 6. Create derived labelmap images for all CT slices
+      const derivedImages = imageLoader.createAndCacheDerivedLabelmapImages(imageIds)
+      const derivedImageIds = derivedImages.map((img: any) => img.imageId)
+
+      // Build imageId → derived image index lookup
+      const imageIdToIdx = new Map<string, number>()
+      imageIds.forEach((id, idx) => imageIdToIdx.set(id, idx))
+
+      // 7. Write segment labels into the derived labelmap pixel data
+      let matchedFrames = 0, skippedBg = 0, noZMatch = 0, pixelsWritten = 0
+      for (let f = 0; f < numFrames; f++) {
+        const frameGroup = perFrame[f]
+        if (!frameGroup) continue
+
+        // Get segment number for this frame — check multiple locations
+        let segNum = 0
+        // 1. SegmentIdentificationSequence (standard location)
+        const segId = frameGroup.SegmentIdentificationSequence
+        if (segId) {
+          segNum = Number(Array.isArray(segId) ? segId[0]?.ReferencedSegmentNumber : segId?.ReferencedSegmentNumber) || 0
+        }
+        // 2. FrameContentSequence.DimensionIndexValues (common in TotalSegmentator output)
+        if (!segNum) {
+          const fcs = frameGroup.FrameContentSequence
+          const fc = Array.isArray(fcs) ? fcs[0] : fcs
+          const div = fc?.DimensionIndexValues
+          if (div != null) {
+            segNum = Number(Array.isArray(div) ? div[0] : div) || 0
+          }
+        }
+        if (!segNum) segNum = 1  // ultimate fallback
+
+        // Skip background segment frames
+        if (skipSegNums.has(segNum)) { skippedBg++; continue }
+
+        // Get Z position for this frame
+        const planePos = frameGroup.PlanePositionSequence
+        const ipp = Array.isArray(planePos) ? planePos[0]?.ImagePositionPatient : planePos?.ImagePositionPatient
+        if (!ipp) {
+          if (f < 3) console.log(`Frame ${f}: no IPP. planePos=`, planePos)
+          continue
+        }
+
+        // ImagePositionPatient is [x, y, z] — extract Z
+        const ippArr = Array.isArray(ipp) ? ipp : [ipp]
+        const zVal = parseFloat(ippArr.length >= 3 ? ippArr[2] : ippArr[0])
+        const zKey = zVal.toFixed(1)
+
+        if (f < 3) console.log(`Frame ${f}: seg=${segNum}, ipp=`, ipp, `zKey=${zKey}, match=${zToImageId.has(zKey)}`)
+
+        const ctImageId = zToImageId.get(zKey)
+        if (!ctImageId) { noZMatch++; continue }
+
+        const sliceIdx = imageIdToIdx.get(ctImageId)
+        if (sliceIdx === undefined) continue
+
+        // Get the derived image's pixel data and write segment values
+        const derivedImg = derivedImages[sliceIdx] as any
+        const scalarData = derivedImg.voxelManager?.getScalarData?.()
+          ?? derivedImg.getPixelData?.()
+        if (!scalarData) {
+          if (f < 3) console.log(`Frame ${f}: no scalarData. derivedImg keys=`, Object.keys(derivedImg))
+          continue
+        }
+
+        const frameOffset = f * pixelsPerFrame
+        for (let p = 0; p < pixelsPerFrame; p++) {
+          if (pixelValues[frameOffset + p] !== 0) {
+            scalarData[p] = segNum
+            pixelsWritten++
+          }
+        }
+        matchedFrames++
+      }
+      console.log(`SEG frame matching: matched=${matchedFrames}, skippedBg=${skippedBg}, noZMatch=${noZMatch}, pixelsWritten=${pixelsWritten}`)
+
+      // 8. Register segmentation with Cornerstone tools
+      const segmentationId = `seg-${activeStudy}-${Date.now()}`
+
+      segmentationModule.addSegmentations([{
+        segmentationId,
+        representation: {
+          type: ToolEnums.SegmentationRepresentations.Labelmap,
+          data: { imageIds: derivedImageIds } as any,
+        },
+        config: {
+          segments: Object.fromEntries(
+            segmentMeta.map(s => [s.index, { label: s.label, active: false }])
+          ),
+        },
+      }])
+
+      segmentationModule.addLabelmapRepresentationToViewport(VIEWPORT_ID, [{
+        segmentationId,
+        type: ToolEnums.SegmentationRepresentations.Labelmap,
+      }])
+
+      // 9. Update segments panel with actual colors from Cornerstone's color LUT
+      const colorLUT = segmentationModule.state.getColorLUT(0)
+      const segmentsWithColors = segmentMeta.map(s => ({
+        ...s,
+        color: colorLUT?.[s.index]
+          ? [colorLUT[s.index][0], colorLUT[s.index][1], colorLUT[s.index][2]]
+          : s.color,
+      }))
+      setSegments(segmentsWithColors)
+
+      // 10. Re-render
+      getRenderingEngine()?.getViewport(VIEWPORT_ID)?.render()
+      setStatus(`Loaded ${numFrames} SEG frames (${segmentMeta.length} segment${segmentMeta.length !== 1 ? 's' : ''})`)
+    } catch (err) {
+      setStatus(`Error loading SEG: ${err instanceof Error ? err.message : String(err)}`)
+      console.error('SEG load error:', err)
+    }
+  }, [activeStudy, segPath])
 
   // ---------------------------------------------------------------------------
   // BONUS A — AI-Assisted Segmentation
