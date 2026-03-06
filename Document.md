@@ -18,6 +18,7 @@ I implemented all four core tasks and both bonuses for the DICOM Annotation View
 ### Task 1 — Study Selector
 
 Built a clickable list of LIDC studies in the left sidebar panel. Each item shows the study ID and slice count. Clicking a study calls `loadStudy(caseId)` to fetch CT slices into the viewport, with a progress callback updating the status bar (e.g. "Loading LIDC-IDRI-0001... 45/133"). The `activeStudy` state tracks the selection and applies visual highlighting (accent background, white text). After loading, the viewport jumps to the middle slice.
+<img width="323" height="242" alt="image" src="https://github.com/user-attachments/assets/ed118a51-1f40-4f88-a72c-fde0c60c1eb0" />
 
 **Tradeoff:** I set `activeStudy` before loading completes so that Tasks 2-4 can reference it immediately. This means a user could theoretically click "Load GT" while slices are still loading, but the guard checks in those handlers prevent issues.
 
@@ -32,7 +33,9 @@ This was the most technically challenging core task. The pipeline:
 5. For each `<roi>`, extract `<imageZposition>` and `<edgeMap>` points, convert pixel coords to world coords via `csUtils.imageToWorldCoords()`, and create `PlanarFreehandROI` annotations
 6. Skip ROIs with fewer than 3 edge points (single-point markers can't form freehand contours)
 
-**What surprised me:** The `imageToWorldCoords` coordinate order was the single biggest gotcha — see the [dedicated section below](#the-imagetoworldcoords-coordinate-trap) for the full story.
+<img width="1830" height="835" alt="image" src="https://github.com/user-attachments/assets/b9044abf-af62-4d6f-88ee-a6efab687f97" />
+
+**What surprised me:** The `imageToWorldCoords` coordinate order was confusing — see the [dedicated section below](#the-imagetoworldcoords-coordinate-trap) for the full story.
 
 ### Task 3 — Run AI Segmentation
 
@@ -55,6 +58,8 @@ This task required the deepest dive into DICOM internals. The pipeline:
 7. Create derived labelmap images, write segment values into their pixel data
 8. Register with Cornerstone via `addSegmentations()` + `addLabelmapRepresentationToViewport()`
 9. Read colours from Cornerstone's internal colour LUT to populate the Segments sidebar panel
+
+<img width="1905" height="813" alt="image" src="https://github.com/user-attachments/assets/c9d76fe6-5f22-49ef-8c00-e022c748d419" />
 
 **What surprised me:** The `naturalizeDataset` binary corruption issue. The first attempt used `dataset.PixelData` directly, which produced garbage. It took several iterations to discover the raw dict access pattern.
 
@@ -111,6 +116,7 @@ const worldPt = csUtils.imageToWorldCoords(imageId, [xCoord, yCoord])
 - Extract the DICOM SEG loading logic into a shared helper function instead of duplicating it between Task 4 and Bonus A
 - Add a visual loading progress bar for long-running operations instead of relying solely on status bar text
 - Implement segment visibility toggles in the sidebar panel — I had planned this for Bonus B but prioritised getting the slider and keyboard shortcuts solid first
+- Should clear the overlay of text for the Load GT feature.
 
 ### Was there anything surprising about the codebase?
 
