@@ -9,7 +9,7 @@
 
 ## Overview
 
-I implemented all four core tasks and both bonuses for the DICOM Annotation Viewer. My strategy was to work sequentially — Task 1 first (since it unlocks everything else), then Tasks 2-4 in order, followed by the bonuses. For Task 4, I used the pre-computed DICOM SEG files during development to avoid waiting for TotalSegmentator. All implementation lives in a single file (`src/App.tsx`), building on the existing skeleton functions.
+I implemented all four core tasks and both bonuses for the DICOM Annotation Viewer. My strategy was to work sequentially — Task 1 first (since it unlocks everything else), then Tasks 2-4 in order, followed by the bonuses. Task 4 can display either a live TotalSegmentator result from Task 3 or the pre-computed DICOM SEG fallback — during development I relied on the pre-computed files to iterate quickly without waiting for the model. All implementation lives in a single file (`src/App.tsx`), building on the existing skeleton functions.
 
 ---
 
