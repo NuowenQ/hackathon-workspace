@@ -92,6 +92,52 @@ export default function App() {
     return () => { cleanupResize?.() }
   }, [])
 
+  // ── Bonus B: Keyboard shortcuts ───────────────────────────────────────────
+  useEffect(() => {
+    if (!ready) return
+    const handleKey = (e: KeyboardEvent) => {
+      // Skip if user is typing in an input
+      if (e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement) return
+      const vp = getRenderingEngine()?.getViewport(VIEWPORT_ID) as any
+      switch (e.key.toLowerCase()) {
+        case 'w': handleNavTool('WindowLevel'); break
+        case 'p': handleNavTool('Pan'); break
+        case 'z': handleNavTool('Zoom'); break
+        case 'arrowleft':
+        case 'arrowup': {
+          e.preventDefault()
+          const idx = vp?.getCurrentImageIdIndex?.() ?? 0
+          if (idx > 0) {
+            vp.setImageIdIndex(idx - 1); vp.render()
+            setInfo(prev => ({ ...prev, slice: String(idx) }))
+          }
+          break
+        }
+        case 'arrowright':
+        case 'arrowdown': {
+          e.preventDefault()
+          const idx = vp?.getCurrentImageIdIndex?.() ?? 0
+          const total = getImageIds().length
+          if (idx < total - 1) {
+            vp.setImageIdIndex(idx + 1); vp.render()
+            setInfo(prev => ({ ...prev, slice: String(idx + 2) }))
+          }
+          break
+        }
+      }
+    }
+    window.addEventListener('keydown', handleKey)
+    return () => window.removeEventListener('keydown', handleKey)
+  }, [ready])
+
+  // ── Bonus B: Slice slider handler ───────────────────────────────────────────
+  const handleSliderChange = useCallback((e: React.ChangeEvent<HTMLInputElement>) => {
+    const idx = Number(e.target.value)
+    const vp = getRenderingEngine()?.getViewport(VIEWPORT_ID) as any
+    if (vp) { vp.setImageIdIndex(idx); vp.render() }
+    setInfo(prev => ({ ...prev, slice: String(idx + 1) }))
+  }, [])
+
   // ── Slice change listener ──────────────────────────────────────────────────
   useEffect(() => {
     if (!ready || !viewportRef.current) return
@@ -267,8 +313,6 @@ export default function App() {
           zToImageId.set(zKey, imgId)
         }
       }
-      console.log(`Z→imageId map: ${zToImageId.size} entries from ${imageIds.length} images`)
-
       // 4. Extract ROIs and create annotations
       const rois = doc.getElementsByTagNameNS(NS, 'roi')
       let addedCount = 0
@@ -470,15 +514,8 @@ export default function App() {
       const pixelValues = isBitpacked
         ? dcmjs.data.BitArray.unpack(pixelDataBuffer)
         : new Uint8Array(pixelDataBuffer)
-      console.log('SEG PixelData:', pixelDataBuffer.byteLength, 'bytes,',
-        isBitpacked ? 'bitpacked' : 'byte-per-pixel',
-        'pixels:', pixelValues.length, 'expected:', numFrames * pixelsPerFrame)
-
       // 4. Get per-frame functional groups to map each frame → Z position + segment number
       const perFrame: any[] = dataset.PerFrameFunctionalGroupsSequence || []
-      // Log full keys of first frame to find SegmentIdentificationSequence location
-      console.log('PerFrame[0] keys:', perFrame[0] ? Object.keys(perFrame[0]) : 'none')
-      console.log('PerFrame[0] full:', JSON.stringify(perFrame[0], null, 2).slice(0, 1500))
 
       // 5. Build Z → imageId map from CT stack (use .toFixed(1) for robust matching)
       const imageIds = getImageIds()
@@ -492,8 +529,6 @@ export default function App() {
           zToImageId.set(zKey, imgId)
         }
       }
-      console.log('CT Z→imageId map:', zToImageId.size, 'entries. Sample keys:', [...zToImageId.keys()].slice(0, 5))
-
       // 6. Create derived labelmap images for all CT slices
       const derivedImages = imageLoader.createAndCacheDerivedLabelmapImages(imageIds)
       const derivedImageIds = derivedImages.map((img: any) => img.imageId)
@@ -532,17 +567,12 @@ export default function App() {
         // Get Z position for this frame
         const planePos = frameGroup.PlanePositionSequence
         const ipp = Array.isArray(planePos) ? planePos[0]?.ImagePositionPatient : planePos?.ImagePositionPatient
-        if (!ipp) {
-          if (f < 3) console.log(`Frame ${f}: no IPP. planePos=`, planePos)
-          continue
-        }
+        if (!ipp) continue
 
         // ImagePositionPatient is [x, y, z] — extract Z
         const ippArr = Array.isArray(ipp) ? ipp : [ipp]
         const zVal = parseFloat(ippArr.length >= 3 ? ippArr[2] : ippArr[0])
         const zKey = zVal.toFixed(1)
-
-        if (f < 3) console.log(`Frame ${f}: seg=${segNum}, ipp=`, ipp, `zKey=${zKey}, match=${zToImageId.has(zKey)}`)
 
         const ctImageId = zToImageId.get(zKey)
         if (!ctImageId) { noZMatch++; continue }
@@ -554,10 +584,7 @@ export default function App() {
         const derivedImg = derivedImages[sliceIdx] as any
         const scalarData = derivedImg.voxelManager?.getScalarData?.()
           ?? derivedImg.getPixelData?.()
-        if (!scalarData) {
-          if (f < 3) console.log(`Frame ${f}: no scalarData. derivedImg keys=`, Object.keys(derivedImg))
-          continue
-        }
+        if (!scalarData) continue
 
         const frameOffset = f * pixelsPerFrame
         for (let p = 0; p < pixelsPerFrame; p++) {
@@ -568,8 +595,6 @@ export default function App() {
         }
         matchedFrames++
       }
-      console.log(`SEG frame matching: matched=${matchedFrames}, skippedBg=${skippedBg}, noZMatch=${noZMatch}, pixelsWritten=${pixelsWritten}`)
-
       // 8. Register segmentation with Cornerstone tools
       const segmentationId = `seg-${activeStudy}-${Date.now()}`
 
@@ -895,6 +920,19 @@ export default function App() {
           <div className="viewport">
             <div ref={viewportRef} style={{ width: '100%', height: '100%' }} />
           </div>
+          {ready && getImageIds().length > 0 && (
+            <div className="slice-slider">
+              <span className="slice-label">Slice</span>
+              <input
+                type="range"
+                min={0}
+                max={getImageIds().length - 1}
+                value={info.slice !== '--' ? Number(info.slice) - 1 : 0}
+                onChange={handleSliderChange}
+              />
+              <span className="slice-label">{info.slice} / {info.total}</span>
+            </div>
+          )}
         </div>
 
         {/* Right panel — annotations + segments */}
